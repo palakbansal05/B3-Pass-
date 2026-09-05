@@ -1,0 +1,26 @@
+
+__pycache__/
+venv/
+.venv/
+.env
+# Generated project artifacts
+faiss_index/*
+models/*.pkl
+data/
+*.pdf
+
+# --- Literature corpus source material ---
+# manual_papers.txt contains full extracted PDF text of copyrighted papers —
+# don't redistribute this in a public repo, regenerate locally via extract_pdfs.py
+corpus/manual_papers.txt
+corpus/cleaned_manual_papers.txt
+corpus/raw_abstracts.pkl
+
+# --- Frontend ---
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+
+# --- OS / editor cruft ---
+.DS_Store
+.vscode/
