@@ -10,12 +10,15 @@ CORS(app)
 
 @app.route("/predict", methods=["POST"])
 def predict():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     smiles = data.get("smiles", "")
     if not smiles:
         return jsonify({"error": "No SMILES provided"}), 400
-    result = agent_pipeline.invoke({"smiles": smiles})
-    return jsonify(result)
+    try:
+        result = agent_pipeline.invoke({"smiles": smiles})
+        return jsonify(result)
+    except Exception as error:
+        return jsonify({"error": str(error)}), 500
 
 @app.route("/health", methods=["GET"])
 def health():
