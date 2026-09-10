@@ -9,35 +9,18 @@ import numpy as np
 import pickle
 import os
 import time
-from pathlib import Path
 from sentence_transformers import SentenceTransformer
 from google import genai
-from dotenv import load_dotenv
-
-load_dotenv()
 
 FEATURE_COLS = ["MolWt", "LogP", "TPSA", "NumHDonors", "NumHAcceptors", "NumRotatableBonds"]
 
 # Load everything once at module level, not inside each agent call
 classifier = joblib.load("models/bbb_classifier.pkl")
-# Compute training descriptor ranges directly from the same file the model trained on,
-# so this is always accurate even if you retrain later with different data.
-_train_df = pd.read_csv("data/processed/b3db_features.csv")
-TRAIN_DESCRIPTOR_RANGES = {
-    col: (_train_df[col].min(), _train_df[col].max())
-    for col in ["MolWt", "LogP", "TPSA"]
-}
 embed_model = SentenceTransformer("all-MiniLM-L6-v2")
 faiss_index = faiss.read_index("faiss_index/literature.index")
 with open("faiss_index/chunks.pkl", "rb") as f:
     corpus_chunks = pickle.load(f)
-load_dotenv(Path(__file__).resolve().parents[1] / ".env")
-gemini_api_key = os.getenv("GEMINI_API_KEY")
-if not gemini_api_key:
-    raise RuntimeError(
-        "GEMINI_API_KEY is missing. Add it to the project .env file or your environment."
-    )
-gemini_client = genai.Client(api_key=gemini_api_key)
+gemini_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
 class MoleculeState(TypedDict):
     smiles: str
@@ -50,6 +33,7 @@ class MoleculeState(TypedDict):
     low_confidence: bool
     out_of_distribution: bool
     needs_extra_retrieval: bool
+    report_degraded: bool
 
 def get_descriptors(smiles):
     mol = Chem.MolFromSmiles(smiles)
@@ -95,7 +79,7 @@ def build_fallback_report(state, confidence_note):
     desc = state["descriptors"]
     verdict = "likely permeable" if state["prediction"] >= 0.5 else "likely non-permeable"
     lines = [
-        f"[AI explanation service temporarily unavailable.]",
+        f"[Automated summary — AI explanation service temporarily unavailable]",
         f"Prediction: {verdict} (model score: {state['prediction']:.3f}).",
         f"Descriptors: MolWt={desc['MolWt']:.1f}, LogP={desc['LogP']:.2f}, "
         f"TPSA={desc['TPSA']:.1f}, HBD={desc['NumHDonors']}, HBA={desc['NumHAcceptors']}.",
@@ -103,7 +87,7 @@ def build_fallback_report(state, confidence_note):
     if confidence_note:
         lines.append(confidence_note.strip())
     if state["retrieved_context"]:
-        lines.append(f"{len(state['retrieved_context'])}")
+        lines.append(f"{len(state['retrieved_context'])} related literature passages were retrieved but could not be summarized right now.")
     return "\n".join(lines)
 
 def report_agent(state):
@@ -167,31 +151,6 @@ Write a short, clear explanation (3-5 sentences) of this prediction. State the p
 
     return state
 
-def verifier_agent(state):
-    if not state["valid"]:
-        return state
-
-    confidence = abs(state["prediction"] - 0.5) * 2  # 0 = totally unsure, 1 = totally sure
-    desc = state["descriptors"]
-
-    out_of_range = any(
-        not (TRAIN_DESCRIPTOR_RANGES[k][0] <= desc[k] <= TRAIN_DESCRIPTOR_RANGES[k][1])
-        for k in TRAIN_DESCRIPTOR_RANGES
-    )
-
-    state["low_confidence"] = confidence < 0.3
-    state["out_of_distribution"] = out_of_range
-    state["needs_extra_retrieval"] = state["low_confidence"] or state["out_of_distribution"]
-    return state
-
-def route_after_verify(state):
-    if not state["valid"]:
-        return "report"
-    return "retrieve_more" if state["needs_extra_retrieval"] else "retrieve"
-
-def retrieve_more_agent(state):
-    return retrieval_agent(state, k=6)  # pull more context when the model is unsure
-
 def build_graph():
     graph = StateGraph(MoleculeState)
     graph.add_node("validate", validate_agent)
@@ -216,18 +175,6 @@ def build_graph():
 app = build_graph()
 
 if __name__ == "__main__":
-    test_cases = {
-        "normal (caffeine)": "CN1C=NC2=C1C(=O)N(C(=O)N2C)C",
-        "extreme (constructed high-MW molecule)": "CCCCCCCCCCCCCCCCCCCCC(=O)OCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC(=O)O",
-        "invalid smiles": "not_a_real_smiles_string!!",
-    }
-
-    for label, smiles in test_cases.items():
-        print(f"\n--- {label} ---")
-        result = app.invoke({"smiles": smiles})
-        print("valid:", result.get("valid"))
-        print("prediction:", result.get("prediction"))
-        print("low_confidence:", result.get("low_confidence"))
-        print("out_of_distribution:", result.get("out_of_distribution"))
-        print("needs_extra_retrieval:", result.get("needs_extra_retrieval"))
-        print("num retrieved chunks:", len(result.get("retrieved_context", [])))
+    # Quick standalone test before wiring into Flask
+    result = app.invoke({"smiles": "CN1C=NC2=C1C(=O)N(C(=O)N2C)C"})  # caffeine
+    print(result)
